@@ -1,10 +1,10 @@
-import { supabase } from '../../api/src/config/db.js';
+import { supabaseAdmin } from '../../api/src/config/db.js';
 import logger from '../../api/src/middleware/logger.js';
 
 class EventRepository {
   async saveEvent(event) {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await supabaseAdmin
         .from('events')
         .insert([{
           event_id: event.eventId,
@@ -27,7 +27,7 @@ class EventRepository {
 
   async getEventsByOrderId(orderId, limit = 100) {
     try {
-      const query = supabase
+      const query = supabaseAdmin
         .from('events')
         .select('*')
         .eq('order_id', orderId)
@@ -48,7 +48,7 @@ class EventRepository {
 
   async getAllEventsByOrderId(orderId) {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await supabaseAdmin
         .from('events')
         .select('*')
         .eq('order_id', orderId)
@@ -65,7 +65,7 @@ class EventRepository {
 
   async getEventsByType(eventType, limit = 100) {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await supabaseAdmin
         .from('events')
         .select('*')
         .eq('event_type', eventType)
@@ -82,7 +82,7 @@ class EventRepository {
 
   async getEventById(eventId) {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await supabaseAdmin
         .from('events')
         .select('*')
         .eq('event_id', eventId)
@@ -99,13 +99,13 @@ class EventRepository {
   async replayEvents(orderId) {
     try {
       const events = await this.getAllEventsByOrderId(orderId);
-       
+
       // Replay events in order
       for (const event of [...events].reverse()) {
         // Emit event again
         await this.reemitEvent(event);
       }
-      
+
       return events;
     } catch (error) {
       logger.error('Failed to replay events:', error);
@@ -146,7 +146,7 @@ class EventRepository {
   async getSnapshot(orderId) {
     try {
       const events = await this.getAllEventsByOrderId(orderId);
-       
+
       // Build current state from events
       const snapshot = {
         orderId,
@@ -154,7 +154,7 @@ class EventRepository {
         data: {},
         timeline: [],
       };
-      
+
       for (const event of [...events].reverse()) {
         snapshot.timeline.push({
           eventId: event.event_id,
@@ -162,7 +162,7 @@ class EventRepository {
           timestamp: event.timestamp,
           data: event.data,
         });
-        
+
         // Update state based on event
         switch (event.event_type) {
           case 'ORDER_CREATED':
@@ -191,7 +191,7 @@ class EventRepository {
             break;
         }
       }
-      
+
       return snapshot;
     } catch (error) {
       logger.error('Failed to get snapshot:', error);
@@ -201,7 +201,7 @@ class EventRepository {
 
   async getEventStats() {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await supabaseAdmin
         .from('events')
         .select('event_type');
 
