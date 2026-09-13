@@ -10,6 +10,7 @@
  *   - reemitEvent uses the event id (not the order id) as the Kafka key
  *   - reemitEvent mirrors eventId into metadata for the consumer's claim
  *   - reemitEvent skips replay when no topic is mapped
+ *   - event-store queries resolve through the service-role Supabase client
  *
  * Run with:  npm test -- test/event.repository.test.js
  */
@@ -22,16 +23,15 @@ vi.mock('../config/kafka.config.js', () => ({
   TOPICS: { ORDER_CREATED: 'order.created', DRIVER_ASSIGNED: 'driver.assigned' },
 }));
 
-// Configurable supabase mock so we can drive the rows returned by the
-// event repository queries without a real database. It emulates the
-// repository's `order('timestamp', {ascending:false})` sort so the
-// rebuild logic (which reverses the rows) applies events oldest-first.
+// Configurable service-role Supabase mock. The events table is service_role
+// only, so importing/using the anon client here would make this suite fail.
 let eventRows = [];
 const queryChain = {
   select: () => queryChain,
   eq: () => queryChain,
   order: () => queryChain,
   limit: () => queryChain,
+  maybeSingle: () => Promise.resolve({ data: eventRows[0] ?? null, error: null }),
   then: (resolve) =>
     resolve({
       data: [...eventRows].sort((a, b) => (a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0)),
@@ -39,13 +39,24 @@ const queryChain = {
     }),
 };
 vi.mock('../../api/src/config/db.js', () => ({
-  supabase: { from: () => queryChain },
+  supabaseAdmin: { from: () => queryChain },
 }));
 vi.mock('../../api/src/middleware/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 import eventRepository from '../repositories/event.repository.js';
+
+describe('EventRepository service-role access (issue #9202)', () => {
+  beforeEach(() => {
+    eventRows = [];
+  });
+
+  it('queries the service-role-backed events table', async () => {
+    eventRows = [{ event_id: 'evt-service-role', timestamp: '2020-01-01T00:00:00Z' }];
+    await expect(eventRepository.getEventById('evt-service-role')).resolves.toEqual(eventRows[0]);
+  });
+});
 
 describe('EventRepository.reemitEvent', () => {
   beforeEach(() => {
@@ -108,7 +119,6 @@ describe('EventRepository rebuild paths (issue #14702)', () => {
   it('replayEvents re-emits EVERY event, not just the newest 100', async () => {
     const orderId = 'order-14702';
     const types = ['ORDER_CREATED', 'DRIVER_ASSIGNED'];
-    // 150 events so the old 100-event limit would have dropped 50 of them.
     for (let i = 1; i <= 150; i += 1) {
       eventRows.push({
         event_id: `evt-${i}`,
@@ -122,7 +132,6 @@ describe('EventRepository rebuild paths (issue #14702)', () => {
 
     await eventRepository.replayEvents(orderId);
 
-    // Every one of the 150 events must be re-emitted, including the oldest.
     expect(publishEvent).toHaveBeenCalledTimes(150);
     const reemittedIds = publishEvent.mock.calls.map((c) => c[1].eventId);
     expect(reemittedIds).toContain('evt-1');
@@ -139,7 +148,6 @@ describe('EventRepository rebuild paths (issue #14702)', () => {
       metadata: { timestamp: '2020-01-01T00:00:01Z' },
       timestamp: '2020-01-01T00:00:01Z',
     });
-    // 149 newer events that would have pushed ORDER_CREATED out of a 100-window.
     for (let i = 2; i <= 150; i += 1) {
       eventRows.push({
         event_id: `evt-${i}`,
@@ -153,13 +161,10 @@ describe('EventRepository rebuild paths (issue #14702)', () => {
 
     const snapshot = await eventRepository.getSnapshot(orderId);
 
-    // The oldest ORDER_CREATED payload must survive the rebuild.
     expect(snapshot.data.amount).toBe(100);
     expect(snapshot.status).toBe('completed');
-    // Timeline must contain every event, oldest through newest.
     expect(snapshot.timeline).toHaveLength(150);
     expect(snapshot.timeline[0].eventId).toBe('evt-1');
     expect(snapshot.timeline[149].eventId).toBe('evt-150');
   });
 });
-
